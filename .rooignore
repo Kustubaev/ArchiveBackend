@@ -1,0 +1,12 @@
+# .rooignore
+ArchiveWeb/bin/
+ArchiveWeb/obj/
+.vs/
+.vscode/
+artifacts/
+packages/
+*.nupkg
+*.snupkg
+*.suo
+*.user
+*.sln.docstates
