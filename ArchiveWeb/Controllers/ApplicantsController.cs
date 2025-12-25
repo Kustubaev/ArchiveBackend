@@ -1,5 +1,6 @@
 using ArchiveWeb.Application.DTOs;
 using ArchiveWeb.Application.DTOs.Applicant;
+using ArchiveWeb.Application.Helpers;
 using ArchiveWeb.Domain.Entities;
 using ArchiveWeb.Infrastructure.Data;
 using Microsoft.AspNetCore.Mvc;
@@ -317,6 +318,55 @@ public sealed class ApplicantsController : ControllerBase
         };
 
         return Ok(response);
+    }
+
+    /// <summary> Автоматическая генерация абитуриентов </summary>
+    [HttpPost("generate")]
+    [ProducesResponseType(typeof(List<ApplicantDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<List<ApplicantDto>>> GenerateApplicants(
+        [FromQuery] int count = 10,
+        CancellationToken cancellationToken = default)
+    {
+        if (count < 1)
+            return BadRequest(new { message = "Количество должно быть больше 0" });
+        
+        if (count > 1000)
+            return BadRequest(new { message = "Максимальное количество для генерации: 1000" });
+
+        var generatedApplicants = new List<Applicant>();
+        
+        for (int i = 0; i < count; i++)
+        {
+            var applicant = ApplicantGeneratorHelper.GenerateApplicant();
+            generatedApplicants.Add(applicant);
+        }
+
+        _context.Applicants.AddRange(generatedApplicants);
+        await _context.SaveChangesAsync(cancellationToken);
+
+        _logger.LogInformation(
+            "Сгенерировано абитуриентов: {Count}",
+            count);
+
+        var result = generatedApplicants.Select(a => new ApplicantDto
+        {
+            Id = a.Id,
+            Surname = a.Surname,
+            FirstName = a.FirstName,
+            Patronymic = a.Patronymic,
+            EducationLevel = a.EducationLevel,
+            StudyForm = a.StudyForm,
+            IsOriginalSubmitted = a.IsOriginalSubmitted,
+            IsBudgetFinancing = a.IsBudgetFinancing,
+            PhoneNumber = a.PhoneNumber,
+            Email = a.Email,
+            CreatedAt = a.CreatedAt,
+            UpdatedAt = a.UpdatedAt,
+            FileArchiveId = null
+        }).ToList();
+
+        return Ok(result);
     }
 }
 

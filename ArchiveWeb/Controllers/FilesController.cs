@@ -1,4 +1,5 @@
 using ArchiveWeb.Application.DTOs;
+using ArchiveWeb.Application.DTOs.Applicant;
 using ArchiveWeb.Application.DTOs.FileArchive;
 using ArchiveWeb.Application.Helpers;
 using ArchiveWeb.Domain.Entities;
@@ -211,6 +212,143 @@ public sealed class FilesController : ControllerBase
         _logger.LogInformation("Дело помечено как удаленное: FileArchiveId={FileArchiveId}", file.Id);
 
         return Ok(new { message = $"Дело с ID {id} успешно удалено." });
+    }
+
+    /// <summary> Получить список абитуриентов, которые нужно принять в архив (без FileArchive) </summary>
+    [HttpGet("pending")]
+    [ProducesResponseType(typeof(PagedResponse<ApplicantDto>), StatusCodes.Status200OK)]
+    public async Task<ActionResult<PagedResponse<ApplicantDto>>> GetPendingApplicants(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10,
+        CancellationToken cancellationToken = default)
+    {
+        if (page < 1) page = 1;
+        if (pageSize < 1 || pageSize > 100) pageSize = 10;
+
+        var query = _context.Applicants
+            .Where(a => a.FileArchive == null)
+            .OrderBy(a => a.CreatedAt);
+
+        var totalCount = await query.CountAsync(cancellationToken);
+
+        var applicants = await query
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(a => new ApplicantDto
+            {
+                Id = a.Id,
+                Surname = a.Surname,
+                FirstName = a.FirstName,
+                Patronymic = a.Patronymic,
+                EducationLevel = a.EducationLevel,
+                StudyForm = a.StudyForm,
+                IsOriginalSubmitted = a.IsOriginalSubmitted,
+                IsBudgetFinancing = a.IsBudgetFinancing,
+                PhoneNumber = a.PhoneNumber,
+                Email = a.Email,
+                CreatedAt = a.CreatedAt,
+                UpdatedAt = a.UpdatedAt,
+                FileArchiveId = null
+            })
+            .ToListAsync(cancellationToken);
+
+        var response = new PagedResponse<ApplicantDto>
+        {
+            Items = applicants,
+            Page = page,
+            PageSize = pageSize,
+            TotalCount = totalCount
+        };
+
+        return Ok(response);
+    }
+
+    /// <summary> Принять все дела в архив (массовое принятие) </summary>
+    [HttpPost("accept-all")]
+    [ProducesResponseType(typeof(BulkAcceptFilesResultDto), StatusCodes.Status200OK)]
+    public async Task<ActionResult<BulkAcceptFilesResultDto>> AcceptAllFiles(
+        CancellationToken cancellationToken = default)
+    {
+        // Получаем всех абитуриентов без FileArchive, отсортированных по дате создания
+        var pendingApplicants = await _context.Applicants
+            .Where(a => a.FileArchive == null)
+            .OrderBy(a => a.CreatedAt)
+            .ToListAsync(cancellationToken);
+
+        var acceptedFiles = new List<FileArchiveDto>();
+        var rejectedFiles = new List<RejectedFileDto>();
+
+        foreach (var applicant in pendingApplicants)
+        {
+            try
+            {
+                var fileArchive = await _fileArchiveService.CreateFileArchiveAsync(
+                    applicant.Id, 
+                    cancellationToken);
+                
+                acceptedFiles.Add(fileArchive);
+                
+                _logger.LogInformation(
+                    "Дело успешно принято: ApplicantId={ApplicantId}, FileArchiveId={FileArchiveId}",
+                    applicant.Id,
+                    fileArchive.Id);
+            }
+            catch (ArchiveException ex)
+            {
+                // Получаем полное имя абитуриента
+                var fullName = string.Join(' ',
+                    new[] { applicant.Surname, applicant.FirstName, applicant.Patronymic ?? string.Empty }
+                        .Where(x => !string.IsNullOrWhiteSpace(x)));
+
+                rejectedFiles.Add(new RejectedFileDto
+                {
+                    ApplicantId = applicant.Id,
+                    FullName = fullName,
+                    ErrorMessage = ex.Message,
+                    ErrorCode = ex.ErrorCode
+                });
+
+                _logger.LogWarning(
+                    "Не удалось принять дело: ApplicantId={ApplicantId}, Error={Error}",
+                    applicant.Id,
+                    ex.Message);
+            }
+            catch (Exception ex)
+            {
+                // Получаем полное имя абитуриента
+                var fullName = string.Join(' ',
+                    new[] { applicant.Surname, applicant.FirstName, applicant.Patronymic ?? string.Empty }
+                        .Where(x => !string.IsNullOrWhiteSpace(x)));
+
+                rejectedFiles.Add(new RejectedFileDto
+                {
+                    ApplicantId = applicant.Id,
+                    FullName = fullName,
+                    ErrorMessage = ex.Message,
+                    ErrorCode = null
+                });
+
+                _logger.LogError(
+                    ex,
+                    "Неожиданная ошибка при принятии дела: ApplicantId={ApplicantId}",
+                    applicant.Id);
+            }
+        }
+
+        var result = new BulkAcceptFilesResultDto
+        {
+            AcceptedFiles = acceptedFiles,
+            RejectedFiles = rejectedFiles,
+            TotalProcessed = pendingApplicants.Count
+        };
+
+        _logger.LogInformation(
+            "Массовое принятие дел завершено: Всего={Total}, Принято={Accepted}, Отклонено={Rejected}",
+            result.TotalProcessed,
+            result.AcceptedCount,
+            result.RejectedCount);
+
+        return Ok(result);
     }
 }
 
