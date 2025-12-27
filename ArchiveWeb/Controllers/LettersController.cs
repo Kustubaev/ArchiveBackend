@@ -1,11 +1,8 @@
 using ArchiveWeb.Application.DTOs.Archive;
 using ArchiveWeb.Application.DTOs.FileArchive;
 using ArchiveWeb.Application.DTOs.Letter;
-using ArchiveWeb.Application.Helpers;
 using ArchiveWeb.Domain.Interfaces.Services;
-using ArchiveWeb.Infrastructure.Data;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace ArchiveWeb.Controllers;
 
@@ -15,17 +12,14 @@ namespace ArchiveWeb.Controllers;
 [Tags("Буквы")]
 public sealed class LettersController : ControllerBase
 {
-    private readonly ArchiveDbContext _context;
-    private readonly IArchiveStatisticsService _statisticsService;
+    private readonly ILetterService _letterService;
     private readonly ILogger<LettersController> _logger;
 
     public LettersController(
-        ArchiveDbContext context,
-        IArchiveStatisticsService statisticsService,
+        ILetterService letterService,
         ILogger<LettersController> logger)
     {
-        _context = context;
-        _statisticsService = statisticsService;
+        _letterService = letterService;
         _logger = logger;
     }
 
@@ -34,26 +28,7 @@ public sealed class LettersController : ControllerBase
     [ProducesResponseType(typeof(List<LetterDto>), StatusCodes.Status200OK)]
     public async Task<ActionResult<List<LetterDto>>> GetLetters(CancellationToken cancellationToken = default)
     {
-        var letters = await _context.Letters
-            .OrderBy(l => l.Value == '+' || l.Value == '-' ? 1 : 0) // Спец-буквы '+' и '-' в конец
-            .ThenBy(l => l.Value == '-' ? 1 : 0) // '-' после '+'
-            .ThenBy(l => l.Value)
-            .Select(l => new LetterDto
-            {
-                Id = l.Id,
-                Value = l.Value,
-                ExpectedCount = l.ExpectedCount,
-                StartBox = l.StartBox,
-                EndBox = l.EndBox,
-                StartPosition = l.StartPosition,
-                EndPosition = l.EndPosition,
-                ActualCount = l.ActualCount,
-                UsedCount = l.UsedCount,
-                CreatedAt = l.CreatedAt,
-                UpdatedAt = l.UpdatedAt
-            })
-            .ToListAsync(cancellationToken);
-
+        var letters = await _letterService.GetLettersAsync(cancellationToken);
         return Ok(letters);
     }
 
@@ -65,24 +40,7 @@ public sealed class LettersController : ControllerBase
         char letter,
         CancellationToken cancellationToken = default)
     {
-        char normalizeLetter = char.ToUpper(letter);
-        var letterEntity = await _context.Letters
-            .Where(l => l.Value == normalizeLetter)
-            .Select(l => new LetterDto
-            {
-                Id = l.Id,
-                Value = l.Value,
-                ExpectedCount = l.ExpectedCount,
-                StartBox = l.StartBox,
-                EndBox = l.EndBox,
-                StartPosition = l.StartPosition,
-                EndPosition = l.EndPosition,
-                ActualCount = l.ActualCount,
-                UsedCount = l.UsedCount,
-                CreatedAt = l.CreatedAt,
-                UpdatedAt = l.UpdatedAt
-            })
-            .FirstOrDefaultAsync(cancellationToken);
+        var letterEntity = await _letterService.GetLetterByValueAsync(letter, cancellationToken);
 
         if (letterEntity == null)
             return NotFound(new { message = $"Буква '{letter}' не найдена" });
@@ -93,39 +51,35 @@ public sealed class LettersController : ControllerBase
     /// <summary> Получить список дел для буквы </summary>
     [HttpGet("{letter}/files")]
     [ProducesResponseType(typeof(List<FileArchiveDto>), StatusCodes.Status200OK)]
-    public async Task<ActionResult<List<FileArchiveDto>>> GetLetterFiles(
-        char letter,
-        CancellationToken cancellationToken = default)
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<List<FileArchiveDto>>> GetLetterFiles(char letter, CancellationToken cancellationToken = default)
     {
-        var letterEntity = await _context.Letters
-            .FirstOrDefaultAsync(l => l.Value == letter, cancellationToken);
+        try
+        {
+            var files = await _letterService.GetLetterFilesAsync(letter, cancellationToken);
+            return Ok(files);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+    }
 
-        if (letterEntity == null)
-            return NotFound(new { message = $"Буква '{letter}' не найдена" });
-
-        var files = await _context.FileArchives
-            .Include(f => f.Box)
-            .Include(f => f.Letter)
-            .Where(f => f.LetterId == letterEntity.Id)
-            .OrderBy(f => f.Box.Number)
-            .ThenBy(f => f.PositionInBox)
-            .Select(f => new FileArchiveDto
-            {
-                Id = f.Id,
-                ApplicantId = f.ApplicantId,
-                FileNumberForArchive = f.FileNumberForArchive,
-                FullName = f.FullName,
-                FirstLetterSurname = f.FirstLetterSurname,
-                Letter = f.Letter.Value,
-                FileNumberForLetter = f.FileNumberForLetter,
-                BoxNumber = f.Box.Number,
-                PositionInBox = f.PositionInBox,
-                IsDeleted = f.IsDeleted,
-                CreatedAt = f.CreatedAt,
-            })
-            .ToListAsync(cancellationToken);
-
-        return Ok(files);
+    /// <summary> Получить список дел по первой букве фамилии </summary>
+    [HttpGet("{firstLetter}/first-letter-files")]
+    [ProducesResponseType(typeof(List<FileArchiveDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<List<FileArchiveDto>>> GetFirstLetterFiles(char firstLetter, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var files = await _letterService.GetFirstLetterFilesAsync(firstLetter, cancellationToken);
+            return Ok(files);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
     }
 
     /// <summary> Получить статистику по букве </summary>
@@ -136,10 +90,10 @@ public sealed class LettersController : ControllerBase
         char letter,
         CancellationToken cancellationToken = default)
     {
-        char normalizeLetter = char.ToUpper(letter);
         try
         {
-            var statistics = await _statisticsService.GetLetterStatisticsAsync(normalizeLetter, cancellationToken);
+            char normalizeLetter = char.ToUpper(letter);
+            var statistics = await _letterService.GetLetterStatisticsAsync(normalizeLetter, cancellationToken);
             return Ok(statistics);
         }
         catch (InvalidOperationException ex)

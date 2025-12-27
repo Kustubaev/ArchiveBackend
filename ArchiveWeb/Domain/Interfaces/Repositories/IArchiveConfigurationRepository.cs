@@ -7,4 +7,6 @@ public interface IArchiveConfigurationRepository
     Task<ArchiveConfiguration?> GetLastArchiveConfigurationAsync(CancellationToken cancellationToken);
     Task<int> CountAsync(CancellationToken cancellationToken);
     Task AddAsync(ArchiveConfiguration config, CancellationToken cancellationToken = default);
+    Task UpdateAsync(ArchiveConfiguration config, CancellationToken cancellationToken = default);
+    Task DeleteAllAsync(CancellationToken cancellationToken = default);
 }

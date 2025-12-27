@@ -2,9 +2,10 @@
 using ArchiveWeb.Domain.Interfaces.Repositories;
 using ArchiveWeb.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using System.Linq.Expressions;
 
 namespace ArchiveWeb.Infrastructure.Repositories;
-public class BoxRepository : IBoxRepository
+public sealed class BoxRepository : IBoxRepository
 {
     private readonly ArchiveDbContext _context;
     public BoxRepository(ArchiveDbContext context)
@@ -20,6 +21,22 @@ public class BoxRepository : IBoxRepository
     public async Task<List<Box>> GetAllAsync(CancellationToken cancellationToken = default)
     {
         return await _context.Boxes.ToListAsync(cancellationToken);
+    }
+
+    public async Task<Box?> GetByNumberAsync(int number, CancellationToken cancellationToken = default)
+    {
+        return await _context.Boxes
+            .FirstOrDefaultAsync(b => b.Number == number, cancellationToken);
+    }
+
+    public async Task<int> CountAsync(CancellationToken cancellationToken = default)
+    {
+        return await _context.Boxes.CountAsync(cancellationToken);
+    }
+
+    public async Task<int> CountAsync(Expression<Func<Box, bool>> predicate, CancellationToken cancellationToken = default)
+    {
+        return await _context.Boxes.CountAsync(predicate, cancellationToken);
     }
 
     public async Task RemoveRangeAsync(List<Box> boxes, CancellationToken cancellationToken = default)

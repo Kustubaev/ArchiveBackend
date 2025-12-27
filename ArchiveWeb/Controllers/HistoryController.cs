@@ -1,9 +1,7 @@
 using ArchiveWeb.Application.DTOs;
-using ArchiveWeb.Application.DTOs.Applicant;
 using ArchiveWeb.Application.DTOs.ArchiveHistory;
-using ArchiveWeb.Infrastructure.Data;
+using ArchiveWeb.Domain.Interfaces.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace ArchiveWeb.Controllers;
 
@@ -13,14 +11,14 @@ namespace ArchiveWeb.Controllers;
 [Tags("История")]
 public sealed class HistoryController : ControllerBase
 {
-    private readonly ArchiveDbContext _context;
+    private readonly IHistoryService _historyService;
     private readonly ILogger<HistoryController> _logger;
 
     public HistoryController(
-        ArchiveDbContext context,
+        IHistoryService historyService,
         ILogger<HistoryController> logger)
     {
-        _context = context;
+        _historyService = historyService;
         _logger = logger;
     }
 
@@ -35,49 +33,14 @@ public sealed class HistoryController : ControllerBase
         if (page < 1) page = 1;
         if (pageSize < 1 || pageSize > 100) pageSize = 10;
 
-
-        var archiveHistories= _context.ArchiveHistories.Include(h => h.FileArchive);
-
-        var totalCount = await archiveHistories.CountAsync(cancellationToken);
-
-        var history = await archiveHistories
-            .OrderBy(h => h.CreatedAt)
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .Select(h => new ArchiveHistoryDto
-            {
-                Id = h.Id,
-
-                FileArchiveId = h.FileArchiveId,
-                FullName = h.FileArchive.FullName,
-                FileNumberForArchive = h.FileArchive.FileNumberForArchive,
-
-                Action = h.Action,
-                Reason = h.Reason,
-
-                OldBoxNumber = h.OldBoxNumber,
-                OldPosition = h.OldPosition,
-                NewBoxNumber = h.NewBoxNumber,
-                NewPosition = h.NewPosition,
-
-                CreatedAt = h.CreatedAt
-            })
-            .ToListAsync(cancellationToken);
-
-        var response = new PagedResponse<ArchiveHistoryDto>
-        {
-            Items = history,
-            Page = page,
-            PageSize = pageSize,
-            TotalCount = totalCount
-        };
-
+        var response = await _historyService.GetArchiveHistoryAsync(page, pageSize, cancellationToken);
         return Ok(response);
     }
 
     /// <summary> Получить историю для дела </summary>
     [HttpGet("file/{fileId:guid}")]
     [ProducesResponseType(typeof(PagedResponse<ArchiveHistoryDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PagedResponse<ArchiveHistoryDto>>> GetFileHistory(
         Guid fileId,
         [FromQuery] int page = 1,
@@ -87,129 +50,53 @@ public sealed class HistoryController : ControllerBase
         if (page < 1) page = 1;
         if (pageSize < 1 || pageSize > 100) pageSize = 10;
 
-        var fileExists = await _context.FileArchives
-            .AnyAsync(f => f.Id == fileId, cancellationToken);
-        if (!fileExists)
-            return NotFound(new { message = $"Дело с ID {fileId} не найдено" });
-
-        var query = _context.ArchiveHistories
-            .Include(h => h.FileArchive)
-            .Where(h => h.FileArchiveId == fileId);
-
-        var totalCount = await query.CountAsync(cancellationToken);
-
-        var history = await query
-            .OrderBy(h => h.CreatedAt)
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .Select(h => new ArchiveHistoryDto
-            {
-                Id = h.Id,
-
-                FileArchiveId = h.FileArchiveId,
-                FullName = h.FileArchive.FullName,
-                FileNumberForArchive = h.FileArchive.FileNumberForArchive,
-
-                Action = h.Action,
-                Reason = h.Reason,
-
-                OldBoxNumber = h.OldBoxNumber,
-                OldPosition = h.OldPosition,
-                NewBoxNumber = h.NewBoxNumber,
-                NewPosition = h.NewPosition,
-
-                CreatedAt = h.CreatedAt
-            })
-            .ToListAsync(cancellationToken);
-
-        var response = new PagedResponse<ArchiveHistoryDto>
+        try
         {
-            Items = history,
-            Page = page,
-            PageSize = pageSize,
-            TotalCount = totalCount
-        };
-
-        return Ok(response);
+            var response = await _historyService.GetFileHistoryAsync(fileId, page, pageSize, cancellationToken);
+            return Ok(response);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
     }
 
     /// <summary> Получить историю для коробки </summary>
     [HttpGet("box/{boxNumber:int}")]
     [ProducesResponseType(typeof(List<ArchiveHistoryDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<List<ArchiveHistoryDto>>> GetBoxHistory(
         int boxNumber,
         CancellationToken cancellationToken = default)
     {
-        var box = await _context.Boxes
-            .FirstOrDefaultAsync(b => b.Number == boxNumber, cancellationToken);
-        if (box == null)
-            return NotFound(new { message = $"Коробка с номером {boxNumber} не найдена" });
-
-        var history = await _context.ArchiveHistories
-            .Include(h => h.FileArchive)
-            .Where(h => h.OldBoxId == box.Id || h.NewBoxId == box.Id || h.OldBoxNumber == boxNumber || h.NewBoxNumber == boxNumber)
-            .OrderBy(h => h.CreatedAt)
-            .Select(h => new ArchiveHistoryDto
-            {
-                Id = h.Id,
-
-                FileArchiveId = h.FileArchiveId,
-                FullName = h.FileArchive.FullName,
-                FileNumberForArchive = h.FileArchive.FileNumberForArchive,
-
-                Action = h.Action,
-                Reason = h.Reason,
-
-                OldBoxNumber = h.OldBoxNumber,
-                OldPosition = h.OldPosition,
-                NewBoxNumber = h.NewBoxNumber,
-                NewPosition = h.NewPosition,
-
-                CreatedAt = h.CreatedAt
-            })
-            .ToListAsync(cancellationToken);
-
-        return Ok(history);
+        try
+        {
+            var history = await _historyService.GetBoxHistoryAsync(boxNumber, cancellationToken);
+            return Ok(history);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
     }
 
     /// <summary> Получить историю для буквы </summary>
     [HttpGet("letter/{letter}")]
     [ProducesResponseType(typeof(List<ArchiveHistoryDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<List<ArchiveHistoryDto>>> GetLetterHistory(
         char letter,
         CancellationToken cancellationToken = default)
     {
-
-        var letterEntity = await _context.Letters
-            .FirstOrDefaultAsync(l => l.Value == char.ToUpper(letter), cancellationToken);
-        if (letterEntity == null)
-            return NotFound(new { message = $"Буква '{letter}' не найдена" });
-
-        var history = await _context.ArchiveHistories
-            .Include(h => h.FileArchive)
-            .Where(h => h.OldLetterId == letterEntity.Id || h.NewLetterId == letterEntity.Id)
-            .OrderBy(h => h.CreatedAt)
-            .Select(h => new ArchiveHistoryDto
-            {
-                Id = h.Id,
-
-                FileArchiveId = h.FileArchiveId,
-                FullName = h.FileArchive.FullName,
-                FileNumberForArchive = h.FileArchive.FileNumberForArchive,
-
-                Action = h.Action,
-                Reason = h.Reason,
-
-                OldBoxNumber = h.OldBoxNumber,
-                OldPosition = h.OldPosition,
-                NewBoxNumber = h.NewBoxNumber,
-                NewPosition = h.NewPosition,
-
-                CreatedAt = h.CreatedAt
-            })
-            .ToListAsync(cancellationToken);
-
-        return Ok(history);
+        try
+        {
+            var history = await _historyService.GetLetterHistoryAsync(letter, cancellationToken);
+            return Ok(history);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
     }
 }
 

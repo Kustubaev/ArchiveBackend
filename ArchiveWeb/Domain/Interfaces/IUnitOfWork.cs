@@ -1,12 +1,11 @@
 ﻿using ArchiveWeb.Domain.Interfaces.Repositories;
-using ArchiveWeb.Infrastructure.Repositories;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 
 namespace ArchiveWeb.Domain.Interfaces
 {
     public interface IUnitOfWork : IDisposable
     {
+        IApplicantRepository Applicants { get; }
         IArchiveConfigurationRepository ArchiveConfig { get; }
         IBoxRepository Boxes { get; }
         ILetterRepository Letters { get; }
@@ -14,7 +13,6 @@ namespace ArchiveWeb.Domain.Interfaces
         IArchiveHistoryRepository ArchiveHistories { get; }
 
         Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
-        IQueryable<T> Query<T>() where T : class;
 
         Task<IDbContextTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default);
         Task CommitAsync(CancellationToken cancellationToken = default);

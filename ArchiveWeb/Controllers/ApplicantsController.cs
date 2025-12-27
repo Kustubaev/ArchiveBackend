@@ -1,10 +1,7 @@
 using ArchiveWeb.Application.DTOs;
 using ArchiveWeb.Application.DTOs.Applicant;
-using ArchiveWeb.Application.Helpers;
-using ArchiveWeb.Domain.Entities;
-using ArchiveWeb.Infrastructure.Data;
+using ArchiveWeb.Domain.Interfaces.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace ArchiveWeb.Controllers;
 
@@ -14,14 +11,14 @@ namespace ArchiveWeb.Controllers;
 [Tags("Абитуриенты")]
 public sealed class ApplicantsController : ControllerBase
 {
-    private readonly ArchiveDbContext _context;
+    private readonly IApplicantService _applicantService;
     private readonly ILogger<ApplicantsController> _logger;
 
     public ApplicantsController(
-        ArchiveDbContext context,
+        IApplicantService applicantService,
         ILogger<ApplicantsController> logger)
     {
-        _context = context;
+        _applicantService = applicantService;
         _logger = logger;
     }
 
@@ -36,40 +33,7 @@ public sealed class ApplicantsController : ControllerBase
         if (page < 1) page = 1;
         if (pageSize < 1 || pageSize > 100) pageSize = 10;
 
-        int totalCount = await _context.Applicants.CountAsync(cancellationToken);
-
-        List<ApplicantDto> applicants = await _context.Applicants
-            .OrderBy(a => a.Surname)
-            .ThenBy(a => a.FirstName)
-            .ThenBy(a => a.Patronymic)
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .Select(a => new ApplicantDto
-            {
-                Id = a.Id,
-                Surname = a.Surname,
-                FirstName = a.FirstName,
-                Patronymic = a.Patronymic,
-                EducationLevel = a.EducationLevel,
-                StudyForm = a.StudyForm,
-                IsOriginalSubmitted = a.IsOriginalSubmitted,
-                IsBudgetFinancing = a.IsBudgetFinancing,
-                PhoneNumber = a.PhoneNumber,
-                Email = a.Email,
-                CreatedAt = a.CreatedAt,
-                UpdatedAt = a.UpdatedAt,
-                FileArchiveId = a.FileArchive != null ? a.FileArchive.Id : null
-            })
-            .ToListAsync(cancellationToken);
-
-        PagedResponse<ApplicantDto> response = new PagedResponse<ApplicantDto>
-        {
-            Items = applicants,
-            Page = page,
-            PageSize = pageSize,
-            TotalCount = totalCount
-        };
-
+        var response = await _applicantService.GetApplicantsAsync(page, pageSize, cancellationToken);
         return Ok(response);
     }
 
@@ -81,25 +45,7 @@ public sealed class ApplicantsController : ControllerBase
         Guid id,
         CancellationToken cancellationToken = default)
     {
-        var applicant = await _context.Applicants
-            .Where(a => a.Id == id)
-            .Select(a => new ApplicantDto
-            {
-                Id = a.Id,
-                Surname = a.Surname,
-                FirstName = a.FirstName,
-                Patronymic = a.Patronymic,
-                EducationLevel = a.EducationLevel,
-                StudyForm = a.StudyForm,
-                IsOriginalSubmitted = a.IsOriginalSubmitted,
-                IsBudgetFinancing = a.IsBudgetFinancing,
-                PhoneNumber = a.PhoneNumber,
-                Email = a.Email,
-                CreatedAt = a.CreatedAt,
-                UpdatedAt = a.UpdatedAt,
-                FileArchiveId = a.FileArchive != null ? a.FileArchive.Id : null
-            })
-            .FirstOrDefaultAsync(cancellationToken);
+        var applicant = await _applicantService.GetApplicantByIdAsync(id, cancellationToken);
 
         if (applicant == null)
             return NotFound(new { message = $"Абитуриент с ID {id} не найден" });
@@ -111,58 +57,22 @@ public sealed class ApplicantsController : ControllerBase
     [HttpPost]
     [ProducesResponseType(typeof(ApplicantDto), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    //[ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ApplicantDto>> CreateApplicant(
         [FromBody] CreateApplicantDto dto,
         CancellationToken cancellationToken = default)
     {
         if (!ModelState.IsValid) return BadRequest(ModelState);
 
-        //if (await _context.Applicants.AnyAsync(a => a.Email == dto.Email, cancellationToken))
-        //    return Conflict(new { message = "Пользователь с таким email существует." });
-
-        var applicant = new Applicant
+        try
         {
-            Surname = dto.Surname,
-            FirstName = dto.FirstName,
-            Patronymic = dto.Patronymic,
-            EducationLevel = dto.EducationLevel,
-            StudyForm = dto.StudyForm,
-            IsOriginalSubmitted = dto.IsOriginalSubmitted,
-            IsBudgetFinancing = dto.IsBudgetFinancing,
-            PhoneNumber = dto.PhoneNumber,
-            Email = dto.Email
-        };
+            var result = await _applicantService.CreateApplicantAsync(dto, cancellationToken);
 
-        _context.Applicants.Add(applicant);
-        await _context.SaveChangesAsync(cancellationToken);
-
-        _logger.LogInformation(
-            "Создан новый абитуриент: {ApplicantId}, Email: {Email}",
-            applicant.Id,
-            applicant.Email);
-
-        ApplicantDto result = new ApplicantDto
+            return CreatedAtAction(nameof(GetApplicant), new { id = result.Id }, result);
+        }
+        catch (Exception ex)
         {
-            Id = applicant.Id,
-            Surname = applicant.Surname,
-            FirstName = applicant.FirstName,
-            Patronymic = applicant.Patronymic,
-            EducationLevel = applicant.EducationLevel,
-            StudyForm = applicant.StudyForm,
-            IsOriginalSubmitted = applicant.IsOriginalSubmitted,
-            IsBudgetFinancing = applicant.IsBudgetFinancing,
-            PhoneNumber = applicant.PhoneNumber,
-            Email = applicant.Email,
-            CreatedAt = applicant.CreatedAt,
-            UpdatedAt = applicant.UpdatedAt,
-            FileArchiveId = null
-        };
-
-        return CreatedAtAction(
-            nameof(GetApplicant),
-            new { id = applicant.Id },
-            result);
+            return BadRequest(new { message = ex.Message });
+        }
     }
 
     /// <summary> Обновить данные абитуриента </summary>
@@ -170,7 +80,6 @@ public sealed class ApplicantsController : ControllerBase
     [ProducesResponseType(typeof(ApplicantDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    //[ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ApplicantDto>> UpdateApplicant(
         Guid id,
         [FromBody] UpdateApplicantDto dto,
@@ -178,54 +87,19 @@ public sealed class ApplicantsController : ControllerBase
     {
         if (!ModelState.IsValid) return BadRequest(ModelState);
 
-        var applicant = await _context.Applicants
-            .FirstOrDefaultAsync(a => a.Id == id, cancellationToken);
-
-        if (applicant == null)
-            return NotFound(new { message = $"Абитуриент с ID {id} не найден" });
-
-        // Проверка уникальности email (если изменился)
-        //if (applicant.Email != dto.Email)
-        //{
-        //    var emailExists = await _context.Applicants.AnyAsync(a => a.Email == dto.Email && a.Id != id, cancellationToken);
-        //    if (emailExists) return Conflict(new { message = $"Абитуриент с email {dto.Email} уже существует" });
-        //}
-
-        applicant.Surname = dto.Surname ?? applicant.Surname;
-        applicant.FirstName = dto.FirstName ?? applicant.FirstName;
-        applicant.Patronymic = dto.Patronymic ?? applicant.Patronymic;
-        applicant.EducationLevel = dto.EducationLevel ?? applicant.EducationLevel;
-        applicant.StudyForm = dto.StudyForm ?? applicant.StudyForm;
-        applicant.IsOriginalSubmitted = dto.IsOriginalSubmitted ?? applicant.IsOriginalSubmitted;
-        applicant.IsBudgetFinancing = dto.IsBudgetFinancing ?? applicant.IsBudgetFinancing;
-        applicant.PhoneNumber = dto.PhoneNumber ?? applicant.PhoneNumber;
-        applicant.Email = dto.Email ?? applicant.Email;
-        applicant.UpdatedAt = DateTime.UtcNow;
-
-        await _context.SaveChangesAsync(cancellationToken);
-
-        _logger.LogInformation(
-            "Обновлен абитуриент: {ApplicantId}",
-            applicant.Id);
-
-        ApplicantDto result = new ApplicantDto
+        try
         {
-            Id = applicant.Id,
-            Surname = applicant.Surname,
-            FirstName = applicant.FirstName,
-            Patronymic = applicant.Patronymic,
-            EducationLevel = applicant.EducationLevel,
-            StudyForm = applicant.StudyForm,
-            IsOriginalSubmitted = applicant.IsOriginalSubmitted,
-            IsBudgetFinancing = applicant.IsBudgetFinancing,
-            PhoneNumber = applicant.PhoneNumber,
-            Email = applicant.Email,
-            CreatedAt = applicant.CreatedAt,
-            UpdatedAt = applicant.UpdatedAt,
-            FileArchiveId = applicant.FileArchive?.Id
-        };
-
-        return Ok(result);
+            var result = await _applicantService.UpdateApplicantAsync(id, dto, cancellationToken);
+            return Ok(result);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 
     /// <summary> Удалить абитуриента </summary>
@@ -237,27 +111,18 @@ public sealed class ApplicantsController : ControllerBase
         Guid id,
         CancellationToken cancellationToken = default)
     {
-        var applicant = await _context.Applicants
-            .Include(a => a.FileArchive)
-            .FirstOrDefaultAsync(a => a.Id == id, cancellationToken);
-
-        if (applicant == null) return NotFound(new { message = $"Абитуриент с ID {id} не найден" });
-
-        // Проверка наличия связанного дела
-        if (applicant.FileArchive != null)
-            return Conflict(new
-            {
-                message = $"Невозможно удалить абитуриента: у него есть дело в архиве (ID: {applicant.FileArchive.Id})"
-            });
-
-        _context.Applicants.Remove(applicant);
-        await _context.SaveChangesAsync(cancellationToken);
-
-        _logger.LogInformation(
-            "Удален абитуриент: {ApplicantId}",
-            applicant.Id);
-
-        return NoContent();
+        try
+        {
+            await _applicantService.DeleteApplicantAsync(id, cancellationToken);
+            return NoContent();
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (ex.Message.Contains("не найден"))
+                return NotFound(new { message = ex.Message });
+            
+            return Conflict(new { message = ex.Message });
+        }
     }
 
     /// <summary> Поиск абитуриентов по имени, email или телефону </summary>
@@ -272,51 +137,7 @@ public sealed class ApplicantsController : ControllerBase
         if (page < 1) page = 1;
         if (pageSize < 1 || pageSize > 100) pageSize = 10;
 
-        var applicantsQuery = _context.Applicants.AsQueryable();
-
-        if (!string.IsNullOrWhiteSpace(query))
-        {
-            string searchTerm = query.Trim().ToLower();
-            applicantsQuery = applicantsQuery.Where(a =>
-                (a.Surname + " " + a.FirstName + " " + (a.Patronymic ?? string.Empty)).ToLower().Contains(searchTerm) ||
-                a.Email.ToLower().Contains(searchTerm) ||
-                a.PhoneNumber.Contains(searchTerm));
-        }
-
-        int totalCount = await applicantsQuery.CountAsync(cancellationToken);
-
-        List<ApplicantDto> applicants = await applicantsQuery
-            .OrderBy(a => a.Surname)
-            .ThenBy(a => a.FirstName)
-            .ThenBy(a => a.Patronymic)
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .Select(a => new ApplicantDto
-            {
-                Id = a.Id,
-                Surname = a.Surname,
-                FirstName = a.FirstName,
-                Patronymic = a.Patronymic,
-                EducationLevel = a.EducationLevel,
-                StudyForm = a.StudyForm,
-                IsOriginalSubmitted = a.IsOriginalSubmitted,
-                IsBudgetFinancing = a.IsBudgetFinancing,
-                PhoneNumber = a.PhoneNumber,
-                Email = a.Email,
-                CreatedAt = a.CreatedAt,
-                UpdatedAt = a.UpdatedAt,
-                FileArchiveId = a.FileArchive != null ? a.FileArchive.Id : null
-            })
-            .ToListAsync(cancellationToken);
-
-        PagedResponse<ApplicantDto> response = new PagedResponse<ApplicantDto>
-        {
-            Items = applicants,
-            Page = page,
-            PageSize = pageSize,
-            TotalCount = totalCount
-        };
-
+        var response = await _applicantService.SearchApplicantsAsync(query, page, pageSize, cancellationToken);
         return Ok(response);
     }
 
@@ -328,45 +149,15 @@ public sealed class ApplicantsController : ControllerBase
         [FromQuery] int count = 10,
         CancellationToken cancellationToken = default)
     {
-        if (count < 1)
-            return BadRequest(new { message = "Количество должно быть больше 0" });
-        
-        if (count > 1000)
-            return BadRequest(new { message = "Максимальное количество для генерации: 1000" });
-
-        var generatedApplicants = new List<Applicant>();
-        
-        for (int i = 0; i < count; i++)
+        try
         {
-            var applicant = ApplicantGeneratorHelper.GenerateApplicant();
-            generatedApplicants.Add(applicant);
+            var result = await _applicantService.GenerateApplicantsAsync(count, cancellationToken);
+            return Ok(result);
         }
-
-        _context.Applicants.AddRange(generatedApplicants);
-        await _context.SaveChangesAsync(cancellationToken);
-
-        _logger.LogInformation(
-            "Сгенерировано абитуриентов: {Count}",
-            count);
-
-        var result = generatedApplicants.Select(a => new ApplicantDto
+        catch (ArgumentException ex)
         {
-            Id = a.Id,
-            Surname = a.Surname,
-            FirstName = a.FirstName,
-            Patronymic = a.Patronymic,
-            EducationLevel = a.EducationLevel,
-            StudyForm = a.StudyForm,
-            IsOriginalSubmitted = a.IsOriginalSubmitted,
-            IsBudgetFinancing = a.IsBudgetFinancing,
-            PhoneNumber = a.PhoneNumber,
-            Email = a.Email,
-            CreatedAt = a.CreatedAt,
-            UpdatedAt = a.UpdatedAt,
-            FileArchiveId = null
-        }).ToList();
-
-        return Ok(result);
+            return BadRequest(new { message = ex.Message });
+        }
     }
 }
 

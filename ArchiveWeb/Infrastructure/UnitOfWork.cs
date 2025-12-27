@@ -5,10 +5,11 @@ using ArchiveWeb.Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore.Storage;
 
 namespace ArchiveWeb.Infrastructure;
-public class UnitOfWork : IUnitOfWork
+public sealed class UnitOfWork : IUnitOfWork
 {
     private readonly ArchiveDbContext _context;
 
+    private IApplicantRepository? _applicantRepository;
     private IArchiveConfigurationRepository? _archiveConfigurationRepository;
     private ILetterRepository? _letterRepository;
     private IBoxRepository? _boxRepository;
@@ -19,6 +20,9 @@ public class UnitOfWork : IUnitOfWork
     {
         _context = context;
     }
+
+    public IApplicantRepository Applicants
+        => _applicantRepository ??= new ApplicantRepository(_context);
 
     public IArchiveConfigurationRepository ArchiveConfig
         => _archiveConfigurationRepository ??= new ArchiveConfigurationRepository(_context);
@@ -35,16 +39,9 @@ public class UnitOfWork : IUnitOfWork
     public IArchiveHistoryRepository ArchiveHistories
         => _archiveHistoryRepository ??= new ArchiveHistoryRepository(_context);
 
-    // ... другие свойства репозиториев
-
     public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         return await _context.SaveChangesAsync(cancellationToken);
-    }
-
-    public IQueryable<T> Query<T>() where T : class
-    {
-        return _context.Set<T>();
     }
 
     public async Task<IDbContextTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default)

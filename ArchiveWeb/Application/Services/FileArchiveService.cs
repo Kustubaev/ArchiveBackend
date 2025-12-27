@@ -1,42 +1,43 @@
+using ArchiveWeb.Application.DTOs;
+using ArchiveWeb.Application.DTOs.Applicant;
 using ArchiveWeb.Application.DTOs.FileArchive;
 using ArchiveWeb.Application.Helpers;
 using ArchiveWeb.Application.Models;
 using ArchiveWeb.Domain.Entities;
 using ArchiveWeb.Domain.Exceptions;
+using ArchiveWeb.Domain.Interfaces;
 using ArchiveWeb.Domain.Interfaces.Services;
-using ArchiveWeb.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using System.Collections.Generic;
+using System.Diagnostics.Metrics;
 
 namespace ArchiveWeb.Application.Services;
 
 public sealed class FileArchiveService : IFileArchiveService
 {
-    private readonly ArchiveDbContext _context;
+    private readonly IUnitOfWork _uow;
     private readonly ILogger<FileArchiveService> _logger;
 
     public FileArchiveService(
-        ArchiveDbContext context,
+        IUnitOfWork uow,
         ILogger<FileArchiveService> logger)
     {
-        _context = context;
+        _uow = uow;
         _logger = logger;
     }
 
-    public async Task<FileArchiveDto> CreateFileArchiveAsync(
-        Guid applicantId,
-        CancellationToken cancellationToken = default)
+    public async Task<FileArchiveDto> CreateFileArchiveAsync(Guid applicantId, CancellationToken cancellationToken = default)
     {
         const int maxRetries = 3;
         DbUpdateConcurrencyException? lastException = null;
 
         for (int attempt = 0; attempt < maxRetries; attempt++)
         {
-            using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+            using var transaction = await _uow.BeginTransactionAsync(cancellationToken);
             try
             {
                 // Получение абитуриента
-                var applicant = await _context.Applicants
-                    .FirstOrDefaultAsync(a => a.Id == applicantId, cancellationToken);
+                var applicant = await _uow.Applicants.GetByIdAsync(applicantId, cancellationToken);
                 if (applicant == null)
                     throw new InvalidOperationException($"Абитуриент с ID {applicantId} не найден");
                 if (string.IsNullOrWhiteSpace(applicant.Surname))
@@ -55,26 +56,24 @@ public sealed class FileArchiveService : IFileArchiveService
                     letter = await GetOverflowLetterAsync(cancellationToken);
 
                 // Получение последней конфигурации
-                var config = await _context.ArchiveConfigurations
-                    .OrderByDescending(c => c.CreatedAt)
-                    .FirstOrDefaultAsync(cancellationToken);
+                var config = await _uow.ArchiveConfig.GetLastArchiveConfigurationAsync(cancellationToken);
                 if (config == null)
                     throw new InvalidOperationException("Конфигурация архива не найдена. Необходимо инициализировать архив.");
 
                 // Вычисляем позиции дела
-                var position = CalculatePosition(firstLetter, letter, config.BoxCapacity, cancellationToken);
+                var position = await CalculatePositionAsync(firstLetter, letter, config.BoxCapacity, cancellationToken);
 
                 // Получение коробки
-                var box = await _context.Boxes
-                    .FirstOrDefaultAsync(b => b.Number == position.BoxNumber, cancellationToken);
-                if (box == null || !box.HasAvailableSpace || box.ActualCount >= config.BoxCapacity)
+                var box = await _uow.Boxes.GetByNumberAsync(position.BoxNumber, cancellationToken);
+                if (box == null || !box.HasAvailableSpace)
                     throw new BoxFullException(position.BoxNumber);
+
 
                 string fileNumberForArchive = FileNumberHelper.CalculateFileNumberForArchive(
                     applicant.EducationLevel,
                     applicant.IsOriginalSubmitted,
                     letter.Value,
-                    letter.UsedCount+1);
+                    letter.UsedCount + 1);
 
                 // Создание FileArchive
                 FileArchive fileArchive = new FileArchive
@@ -82,19 +81,20 @@ public sealed class FileArchiveService : IFileArchiveService
                     FileNumberForArchive = fileNumberForArchive,
                     FullName = applicant.GetFullName,
                     FirstLetterSurname = char.ToUpper(applicant.Surname[0]),
-                    FileNumberForLetter = letter.ActualCount+1,
+                    FileNumberForLetter = letter.ActualCount + 1,
                     PositionInBox = position.PositionInBox,
                     IsDeleted = false,
                     ApplicantId = applicantId,
                     BoxId = box.Id,
                     LetterId = letter.Id,
                 };
-                _context.FileArchives.Add(fileArchive);
+                await _uow.FileArchives.AddAsync(fileArchive, cancellationToken);
 
                 // Обновление счетчиков
                 letter.UsedCount++;
                 letter.ActualCount++;
                 box.ActualCount++;
+                await _uow.Letters.UpdateAsync(letter, cancellationToken);
 
                 // Запись в историю
                 ArchiveHistory history = new ArchiveHistory
@@ -113,10 +113,10 @@ public sealed class FileArchiveService : IFileArchiveService
                     NewLetterId = letter.Id,
                     NewBoxId = box.Id,
                 };
-                _context.ArchiveHistories.Add(history);
+                await _uow.ArchiveHistories.AddAsync(history, cancellationToken);
 
-                await _context.SaveChangesAsync(cancellationToken);
-                await transaction.CommitAsync(cancellationToken);
+                await _uow.SaveChangesAsync(cancellationToken);
+                await _uow.CommitAsync(cancellationToken);
 
                 _logger.LogInformation(
                     "Создано дело в архиве: FileArchiveId={FileArchiveId}, ApplicantId={ApplicantId}, Box={BoxNumber}, Position={Position}",
@@ -144,7 +144,7 @@ public sealed class FileArchiveService : IFileArchiveService
             }
             catch (DbUpdateConcurrencyException ex)
             {
-                await transaction.RollbackAsync(cancellationToken);
+                await _uow.RollbackAsync(cancellationToken);
                 lastException = ex;
 
                 if (attempt == maxRetries)
@@ -158,7 +158,7 @@ public sealed class FileArchiveService : IFileArchiveService
             }
             catch (Exception)
             {
-                await transaction.RollbackAsync(cancellationToken);
+                await _uow.RollbackAsync(cancellationToken);
                 throw;
             }
         }
@@ -166,167 +166,313 @@ public sealed class FileArchiveService : IFileArchiveService
         throw new InvalidOperationException("Unexpected state", lastException);
     }
 
-    //public async Task<FileArchiveDto> UpdateFileArchiveAsync(
-    //    FileArchive fileArchive,
-    //    Letter letter,
-    //    CancellationToken cancellationToken = default)
-    //{
-    //    const int maxRetries = 3;
-    //    DbUpdateConcurrencyException? lastException = null;
+    public async Task<FileArchiveDto?> GetFileByIdAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var file = await _uow.FileArchives.GetByIdWithIncludesAsync(id, cancellationToken);
+        if (file == null)
+            return null;
 
-    //    for (int attempt = 0; attempt < maxRetries; attempt++)
-    //    {
-    //        using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
-    //        try
-    //        {
-    //            // Загружаем связанные сущности, если они не загружены
-    //            Applicant? applicant = await _context.Applicants
-    //                .FirstOrDefaultAsync(a => a.Id == fileArchive.ApplicantId, cancellationToken);
-    //            if (applicant == null) throw new InvalidOperationException($"Абитуриент с ID {fileArchive.ApplicantId} не найден");
-    //            if (string.IsNullOrWhiteSpace(applicant.Surname))  throw new InvalidSurnameException("У абитуриента не заполнено поле фамилии");
+        return new FileArchiveDto
+        {
+            Id = file.Id,
+            ApplicantId = file.ApplicantId,
+            FileNumberForArchive = file.FileNumberForArchive,
+            FullName = file.FullName,
+            FirstLetterSurname = file.FirstLetterSurname,
+            Letter = file.Letter.Value,
+            FileNumberForLetter = file.FileNumberForLetter,
+            BoxNumber = file.Box?.Number,
+            PositionInBox = file.PositionInBox,
+            IsDeleted = file.IsDeleted,
+            CreatedAt = file.CreatedAt,
+            UpdatedAt = file.UpdatedAt,
+        };
+    }
 
-    //            // Получаем новую первую букву абитуринта
-    //            char newFirstLetter = char.ToUpper(applicant.Surname.TrimStart()[0]);
-    //            if (!IsCyrillicLetter(newFirstLetter))
-    //                throw new InvalidSurnameException($"Фамилия должна начинаться с кириллической буквы: {applicant.Surname}");
+    public async Task<PagedResponse<FileArchiveDto>> GetFilesAsync(char? letter, int? boxNumber, int page, int pageSize, bool includeDeleted, CancellationToken cancellationToken = default)
+    {
+        if (page < 1) page = 1;
+        if (pageSize < 1 || pageSize > 100) pageSize = 10;
 
-    //            // Получаем актуальную букву
-    //            Letter? currentLetter = letter;
-    //            if (fileArchive.FirstLetterSurname != newFirstLetter)
-    //                currentLetter = await _context.Letters.FirstOrDefaultAsync(l => l.Value == newFirstLetter, cancellationToken) ;         
-    //            if (currentLetter == null)
-    //                throw new LetterNotFoundException(letter.Value);
+        var files = await _uow.FileArchives.GetFilesWithFiltersAsync(letter, boxNumber, includeDeleted, page, pageSize, cancellationToken);
+        var totalCount = await _uow.FileArchives.CountFilesWithFiltersAsync(letter, boxNumber, includeDeleted, cancellationToken);
 
-    //            // Проверяем, что переданная Letter существует в БД
-    //            var existingLetter = await _context.Letters
-    //                .FirstOrDefaultAsync(l => l.Id == letter.Id, cancellationToken);
-    //            if (existingLetter == null)
-    //                throw new LetterNotFoundException(letter.Value);
+        var fileDtos = files.Select(f => new FileArchiveDto
+        {
+            Id = f.Id,
+            ApplicantId = f.ApplicantId,
+            FileNumberForArchive = f.FileNumberForArchive,
+            FullName = f.FullName,
+            FirstLetterSurname = f.FirstLetterSurname,
+            Letter = f.Letter.Value,
+            FileNumberForLetter = f.FileNumberForLetter,
+            BoxNumber = f.Box?.Number,
+            PositionInBox = f.PositionInBox,
+            IsDeleted = f.IsDeleted,
+            CreatedAt = f.CreatedAt,
+            UpdatedAt = f.UpdatedAt,
+        }).ToList();
 
-                
-    //            // Загружаем текущую Letter, связанную с FileArchive, для возможного уменьшения счетчиков
-    //            var currentLetter = await _context.Letters
-    //                .FirstOrDefaultAsync(l => l.Id == fileArchive.LetterId, cancellationToken);
-    //            if (currentLetter == null)
-    //                throw new InvalidOperationException($"Текущая буква с ID {fileArchive.LetterId} для дела {fileArchive.Id} не найдена");
+        return new PagedResponse<FileArchiveDto>
+        {
+            Items = fileDtos,
+            Page = page,
+            PageSize = pageSize,
+            TotalCount = totalCount
+        };
+    }
 
-    //            // --- Логика обновления ---
-    //            // 1. Обновляем LetterId
-    //            var oldLetterId = fileArchive.LetterId; // Для истории
-    //            fileArchive.LetterId = letter.Id;
+    public async Task<FileArchiveDto> DeleteFileAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var file = await _uow.FileArchives.GetByIdWithIncludesAsync(id, cancellationToken);
 
-    //            // 2. Обновляем FirstLetterSurname (предполагаем, что она соответствует новой Letter)
-    //            fileArchive.FirstLetterSurname = letter.Value;
+        if (file == null)
+            throw new InvalidOperationException($"Дело с ID {id} не найдено");
 
-    //            // 3. Обработка FileNumberForArchive
-    //            bool generatedNewNumber = false;
-    //            if (string.IsNullOrEmpty(fileArchive.FileNumberForArchive) || fileArchive.FirstLetterSurname != firstLetter)
-    //            {
-    //                // Генерируем новый номер
-    //                fileArchive.FileNumberForArchive = FileNumberHelper.CalculateFileNumberForArchive(
-    //                    applicant.EducationLevel,
-    //                    applicant.IsOriginalSubmitted,
-    //                    letter.Value,
-    //                    letter.UsedCount + 1);
-    //                generatedNewNumber = true;
-    //            }
+        if (file.IsDeleted)
+            throw new InvalidOperationException($"Дело с ID {id} уже удалено.");
 
-    //            // 4. Обновляем счетчики
-    //            if (generatedNewNumber) 
-    //            {
-    //                letter.UsedCount++;
-    //                _context.Letters.Update(letter);
-    //            }
+        file.IsDeleted = true;
+        file.DeletedAt = DateTime.UtcNow;
+        file.UpdatedAt = DateTime.UtcNow;
 
-    //            fileArchive.UpdatedAt = DateTime.UtcNow; 
+        // Запись в историю
+        var history = new ArchiveHistory
+        {
+            Action = HistoryAction.Delete,
+            FileArchiveId = file.Id,
+            Reason = "Мягкое удаление дела",
 
-    //            // 6. Сохраняем изменения
-    //            _context.FileArchives.Update(fileArchive);
+            OldBoxNumber = file.Box?.Number,
+            OldPosition = file.PositionInBox,
+            OldLetterId = file.LetterId,
+            OldBoxId = file.BoxId,
 
-    //            // 7. Запись в историю
-    //            ArchiveHistory history = new ArchiveHistory
-    //            {
-    //                Action = HistoryAction.Update, // Предполагаем, что это подходящее действие
-    //                OldBoxNumber = null, // Не изменяется в этом методе
-    //                OldPosition = null,  // Не изменяется в этом методе
-    //                NewBoxNumber = null, // Не изменяется в этом методе
-    //                NewPosition = null,  // Не изменяется в этом методе
-    //                Reason = "Обновление буквы и, при необходимости, шифра дела",
-    //                FileArchiveId = fileArchive.Id,
-    //                LetterId = fileArchive.LetterId, // Новая LetterId
-    //                OldLetterId = oldLetterId, // Добавляем старую LetterId в историю
-    //                OldBoxId = null, // Не изменяется в этом методе
-    //                NewBoxId = null, // Не изменяется в этом методе
-    //                OldUsedCount = generatedNewNumber ? letter.UsedCount - 1 : letter.UsedCount, // Показываем, что было до увеличения
-    //                NewUsedCount = letter.UsedCount, // Показываем новое значение
-    //            };
-    //            _context.ArchiveHistories.Add(history);
+            NewBoxNumber = null,
+            NewPosition = null,
+            NewLetterId = null,
+            NewBoxId = null,
+        };
 
-    //            await _context.SaveChangesAsync(cancellationToken);
-    //            await transaction.CommitAsync(cancellationToken);
+        await _uow.FileArchives.UpdateAsync(file, cancellationToken);
+        await _uow.ArchiveHistories.AddAsync(history, cancellationToken);
+        await _uow.SaveChangesAsync(cancellationToken);
 
-    //            _logger.LogInformation(
-    //                "Обновлено дело в архиве: FileArchiveId={FileArchiveId}, ApplicantId={ApplicantId}, NewLetterId={NewLetterId}, GeneratedNewNumber={GeneratedNewNumber}",
-    //                fileArchive.Id,
-    //                fileArchive.ApplicantId,
-    //                fileArchive.LetterId,
-    //                generatedNewNumber);
+        _logger.LogInformation("Дело помечено как удаленное: FileArchiveId={FileArchiveId}", file.Id);
 
-    //            // Возвращаем DTO, загрузив связанные данные для полноты
-    //            // Повторно загружаем для получения актуальных связанных данных, если они не отслеживаются
-    //            var updatedFileArchive = await _context.FileArchives
-    //                .Include(fa => fa.Box) // Предполагаем, что BoxId не меняется в этом методе
-    //                .Include(fa => fa.Letter)
-    //                .Include(fa => fa.Applicant) // Уже загружен, но включим для DTO
-    //                .FirstOrDefaultAsync(fa => fa.Id == fileArchive.Id, cancellationToken);
+        return new FileArchiveDto
+        {
+            Id = file.Id,
+            ApplicantId = file.ApplicantId,
+            FileNumberForArchive = file.FileNumberForArchive,
+            FullName = file.FullName,
+            FirstLetterSurname = file.FirstLetterSurname,
+            Letter = file.Letter.Value,
+            FileNumberForLetter = file.FileNumberForLetter,
+            BoxNumber = file.Box.Number,
+            PositionInBox = file.PositionInBox,
+            IsDeleted = file.IsDeleted,
+            CreatedAt = file.CreatedAt,
+            UpdatedAt = file.UpdatedAt,
+        };
+    }
 
-    //            if (updatedFileArchive == null)
-    //                throw new InvalidOperationException($"Обновленное дело с ID {fileArchive.Id} не найдено после сохранения.");
+    public async Task<List<FileArchiveDto>> DeleteRandomFilesAsync(int count, CancellationToken cancellation = default)
+    {
+        if (count < 1 || count > 1000) count = 10;
 
-    //            return new FileArchiveDto
-    //            {
-    //                Id = updatedFileArchive.Id,
-    //                ApplicantId = updatedFileArchive.ApplicantId,
-    //                FileNumberForArchive = updatedFileArchive.FileNumberForArchive,
-    //                FullName = updatedFileArchive.FullName,
-    //                FirstLetterSurname = updatedFileArchive.FirstLetterSurname,
-    //                Letter = updatedFileArchive.Letter.Value,
-    //                FileNumberForLetter = updatedFileArchive.FileNumberForLetter, // Остается неизменным, если не пересчитывается
-    //                BoxNumber = updatedFileArchive.Box.Number, // Текущий Box, не изменяется этим методом
-    //                PositionInBox = updatedFileArchive.PositionInBox, // Текущая позиция, не изменяется этим методом
-    //                IsDeleted = updatedFileArchive.IsDeleted,
-    //                CreatedAt = updatedFileArchive.CreatedAt,
-    //                UpdatedAt = updatedFileArchive.UpdatedAt,
-    //            };
-    //        }
-    //        catch (DbUpdateConcurrencyException ex)
-    //        {
-    //            await transaction.RollbackAsync(cancellationToken);
-    //            lastException = ex;
+        List<FileArchive> randomFiles = await _uow.FileArchives.GetRandomActiveFilesAsync(count, cancellation);
+        List<FileArchiveDto> removedFileDto = new List<FileArchiveDto>();
 
-    //            if (attempt == maxRetries - 1) // maxRetries попыток, индексация с 0
-    //            {
-    //                _logger.LogError(ex, "Не удалось обновить дело {FileArchiveId} после {MaxRetries} попыток", fileArchive.Id, maxRetries);
-    //                throw; // Бросаем оригинальное исключение
-    //            }
+        foreach (var file in randomFiles)
+        {
+            removedFileDto.Add(await DeleteFileAsync(file.Id, cancellation));
+        }
 
-    //            _logger.LogWarning(ex, "Конфликт параллельного доступа при обновлении {FileArchiveId}. Попытка {Attempt} из {MaxRetries}...", fileArchive.Id, attempt + 1, maxRetries);
-    //            await Task.Delay(Random.Shared.Next(50, 150), cancellationToken);
-    //        }
-    //        catch (Exception ex) // Ловим другие исключения, откатываем транзакцию
-    //        {
-    //            await transaction.RollbackAsync(cancellationToken);
-    //            _logger.LogError(ex, "Ошибка при обновлении дела {FileArchiveId}", fileArchive.Id);
-    //            throw; // Бросаем дальше
-    //        }
-    //    }
+        return removedFileDto;
+    }
 
-    //    // Этот код недостижим, если maxRetries > 0, но компилятор может ругаться
-    //    // Бросаем исключение, если цикл завершился без возврата (теоретически)
-    //    throw new InvalidOperationException($"Не удалось обновить дело {fileArchive.Id} после {maxRetries} попыток.", lastException);
-    //}
+    public async Task<PagedResponse<ApplicantDto>> GetPendingApplicantsAsync(int page, int pageSize, CancellationToken cancellationToken = default)
+    {
+        if (page < 1) page = 1;
+        if (pageSize < 1 || pageSize > 100) pageSize = 10;
 
-    public FilePosition CalculatePosition(
+        var applicants = await _uow.Applicants.GetPendingApplicantsAsync(page, pageSize, cancellationToken);
+        var totalCount = await _uow.Applicants.CountPendingApplicantsAsync(cancellationToken);
+
+        var applicantDtos = applicants.Select(a => new ApplicantDto
+        {
+            Id = a.Id,
+            Surname = a.Surname,
+            FirstName = a.FirstName,
+            Patronymic = a.Patronymic,
+            EducationLevel = a.EducationLevel,
+            StudyForm = a.StudyForm,
+            IsOriginalSubmitted = a.IsOriginalSubmitted,
+            IsBudgetFinancing = a.IsBudgetFinancing,
+            PhoneNumber = a.PhoneNumber,
+            Email = a.Email,
+            CreatedAt = a.CreatedAt,
+            UpdatedAt = a.UpdatedAt,
+            FileArchiveId = null
+        }).ToList();
+
+        return new PagedResponse<ApplicantDto>
+        {
+            Items = applicantDtos,
+            Page = page,
+            PageSize = pageSize,
+            TotalCount = totalCount
+        };
+    }
+
+    public async Task<BulkAcceptFilesResultDto> AcceptAllFilesAsync(CancellationToken cancellationToken = default)
+    {
+        // Получаем всех абитуриентов без FileArchive, отсортированных по дате создания
+        const int pageSize = 1000;
+        var pendingApplicants = await _uow.Applicants.GetPendingApplicantsAsync(1, pageSize, cancellationToken);
+
+        var acceptedFiles = new List<FileArchiveDto>();
+        var rejectedFiles = new List<RejectedFileDto>();
+
+        foreach (var applicant in pendingApplicants)
+        {
+            try
+            {
+                var fileArchive = await CreateFileArchiveAsync(
+                    applicant.Id,
+                    cancellationToken);
+
+                acceptedFiles.Add(fileArchive);
+
+                _logger.LogInformation(
+                    "Дело успешно принято: ApplicantId={ApplicantId}, FileArchiveId={FileArchiveId}",
+                    applicant.Id,
+                    fileArchive.Id);
+            }
+            catch (ArchiveException ex)
+            {
+                // Получаем полное имя абитуриента
+                var fullName = string.Join(' ',
+                    new[] { applicant.Surname, applicant.FirstName, applicant.Patronymic ?? string.Empty }
+                        .Where(x => !string.IsNullOrWhiteSpace(x)));
+
+                rejectedFiles.Add(new RejectedFileDto
+                {
+                    ApplicantId = applicant.Id,
+                    FullName = fullName,
+                    ErrorMessage = ex.Message,
+                    ErrorCode = ex.ErrorCode
+                });
+
+                _logger.LogWarning(
+                    "Не удалось принять дело: ApplicantId={ApplicantId}, Error={Error}",
+                    applicant.Id,
+                    ex.Message);
+            }
+            catch (Exception ex)
+            {
+                var fullName = string.Join(' ',
+                    new[] { applicant.Surname, applicant.FirstName, applicant.Patronymic ?? string.Empty }
+                        .Where(x => !string.IsNullOrWhiteSpace(x)));
+
+                rejectedFiles.Add(new RejectedFileDto
+                {
+                    ApplicantId = applicant.Id,
+                    FullName = fullName,
+                    ErrorMessage = ex.Message,
+                    ErrorCode = null
+                });
+
+                _logger.LogError(
+                    ex,
+                    "Непредвиденная ошибка при принятии дела: ApplicantId={ApplicantId}",
+                    applicant.Id);
+            }
+        }
+
+        return new BulkAcceptFilesResultDto
+        {
+            AcceptedFiles = acceptedFiles,
+            RejectedFiles = rejectedFiles,
+            TotalProcessed = pendingApplicants.Count
+        };
+    }
+
+    public async Task<PagedResponse<FileArchiveDto>> SearchBySurnameAsync(string surname, int page, int pageSize, CancellationToken cancellationToken = default)
+    {
+        if (page < 1) page = 1;
+        if (pageSize < 1 || pageSize > 100) pageSize = 10;
+
+        var files = await _uow.FileArchives.SearchBySurnameAsync(surname, page, pageSize, cancellationToken);
+        var totalCount = await _uow.FileArchives.CountSearchBySurnameAsync(surname, cancellationToken);
+
+        var fileDtos = files.Select(f => new FileArchiveDto
+        {
+            Id = f.Id,
+            ApplicantId = f.ApplicantId,
+            FileNumberForArchive = f.FileNumberForArchive,
+            FullName = f.FullName,
+            FirstLetterSurname = f.FirstLetterSurname,
+            Letter = f.Letter.Value,
+            FileNumberForLetter = f.FileNumberForLetter,
+            BoxNumber = f.Box?.Number,
+            PositionInBox = f.PositionInBox,
+            IsDeleted = f.IsDeleted,
+            CreatedAt = f.CreatedAt,
+            UpdatedAt = f.UpdatedAt,
+        }).ToList();
+
+        return new PagedResponse<FileArchiveDto>
+        {
+            Items = fileDtos,
+            Page = page,
+            PageSize = pageSize,
+            TotalCount = totalCount
+        };
+    }
+
+    public async Task<FileArchiveDto?> SearchByApplicantIdAsync(Guid applicantId, CancellationToken cancellationToken = default)
+    {
+        var file = await _uow.FileArchives.GetByApplicantIdAsync(applicantId, cancellationToken);
+        if (file == null)
+            return null;
+
+        return new FileArchiveDto
+        {
+            Id = file.Id,
+            ApplicantId = file.ApplicantId,
+            FileNumberForArchive = file.FileNumberForArchive,
+            FullName = file.FullName,
+            FirstLetterSurname = file.FirstLetterSurname,
+            Letter = file.Letter.Value,
+            FileNumberForLetter = file.FileNumberForLetter,
+            BoxNumber = file.Box?.Number,
+            PositionInBox = file.PositionInBox,
+            IsDeleted = file.IsDeleted,
+            CreatedAt = file.CreatedAt,
+            UpdatedAt = file.UpdatedAt,
+        };
+    }
+
+
+
+    private async Task<Letter> GetOverflowLetterAsync(CancellationToken cancellationToken = default)
+    {
+        var overflowLetter = await _uow.Letters.GetFirstByConditionAsync(l => l.Value == '+', cancellationToken);
+
+        if (overflowLetter == null)
+            throw new InvalidOperationException("Буква переполнения '+' не найдена. Необходимо инициализировать архив.");
+
+        return overflowLetter;
+    }
+
+    private static bool IsCyrillicLetter(char c)
+    {
+        return (c >= 'А' && c <= 'Я') || c == 'Ё';
+    }
+
+    private async Task<FilePosition> CalculatePositionAsync(
         char firstLetter,
         Letter letter,
         int boxCapacity,
@@ -342,12 +488,21 @@ public sealed class FileArchiveService : IFileArchiveService
         if (letter.ExpectedCount <= 0)
             throw new InvalidOperationException($"Буква '{letter.Value}' не может содержать дел!");
 
-        // Расчет позиции
+        // Вычисление позиции и коробки
         int totalPosition = letter.StartPosition.Value - 1 + letter.ActualCount;
         int boxNumber = letter.StartBox.Value + totalPosition / boxCapacity;
         int position = (totalPosition % boxCapacity) + 1;
 
         if (position == 0) position = boxCapacity;
+
+        if (letter.IsOverflow())
+        {
+            Box? actualBox = await _uow.Boxes.GetByNumberAsync(99999, cancellationToken);
+            if (actualBox == null)
+                throw new BoxFullException(99999);
+            boxNumber = actualBox.Number;
+            position = actualBox.ActualCount + 1;
+        }
 
         return new FilePosition
         {
@@ -356,33 +511,15 @@ public sealed class FileArchiveService : IFileArchiveService
         };
     }
 
-    public async Task<Letter> GetLetterByValueAsync(char letterValue, CancellationToken cancellationToken = default)
+    private async Task<Letter> GetLetterByValueAsync(char letterValue, CancellationToken cancellationToken = default)
     {
         char normalizeLetter = char.ToUpper(letterValue);
-        var letter = await _context.Letters
-            .FirstOrDefaultAsync(l => l.Value == normalizeLetter, cancellationToken);
+        var letter = await _uow.Letters.GetFirstByConditionAsync(l => l.Value == normalizeLetter, cancellationToken);
 
         if (letter == null)
             throw new LetterNotFoundException(normalizeLetter);
 
         return letter;
     }
-
-    public async Task<Letter> GetOverflowLetterAsync(CancellationToken cancellationToken = default)
-    {
-        var overflowLetter = await _context.Letters
-            .FirstOrDefaultAsync(l => l.Value == '+', cancellationToken);
-
-        if (overflowLetter == null)
-            throw new InvalidOperationException("Буква переполнения '+' не найдена. Необходимо инициализировать архив.");
-
-        return overflowLetter;
-    }
-
-    private static bool IsCyrillicLetter(char c)
-    {
-        return (c >= 'А' && c <= 'Я') || c == 'Ё';
-    }
-
 }
 

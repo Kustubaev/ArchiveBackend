@@ -1,13 +1,9 @@
-using ArchiveWeb.Application.Helpers;
-using ArchiveWeb.Domain.Entities;
-using ArchiveWeb.Domain.Enums;
-
 namespace ArchiveWeb.Application.Helpers;
 
 /// <summary> Вспомогательный класс для генерации тестовых абитуриентов </summary>
-public static class ApplicantGeneratorHelper
+public static class ApplicantHelper
 {
-    private static readonly Dictionary<char, List<string>> SurnamesByLetter = new()
+    public static readonly Dictionary<char, List<string>> SurnamesByLetter = new()
     {
         { 'А', new List<string> { "Алексеев", "Андреев", "Антонов", "Артемьев", "Афанасьев" } },
         { 'Б', new List<string> { "Борисов", "Белов", "Богданов", "Баранов", "Беляев" } },
@@ -36,15 +32,15 @@ public static class ApplicantGeneratorHelper
         { 'Ч', new List<string> { "Чернов", "Чернышев", "Черкасов", "Чернов", "Чернышев" } },
         { 'Ш', new List<string> { "Широков", "Шубин", "Шестаков", "Широков", "Шубин" } },
         { 'Щ', new List<string> { "Щербаков", "Щукин", "Щербаков", "Щукин", "Щербаков" } },
-        { 'Ъ', new List<string> { "Редкий", "Петров", "Сидоров", "Козлов", "Смирнов" } }, // Редкие буквы - используем общие фамилии
-        { 'Ы', new List<string> { "Иванов", "Петров", "Сидоров", "Козлов", "Смирнов" } },
-        { 'Ь', new List<string> { "Иванов", "Петров", "Сидоров", "Козлов", "Смирнов" } },
+        { 'Ъ', new List<string> { "Редкий", "Редкий", "Редкий", "Редкий", "Редкий" } }, // Редкие буквы - используем общие фамилии
+        { 'Ы', new List<string> { "Редкий", "Редкий", "Редкий", "Редкий", "Редкий" } },
+        { 'Ь', new List<string> { "Редкий", "Редкий", "Редкий", "Редкий", "Редкий" } },
         { 'Э', new List<string> { "Элькин", "Эрдман", "Элькин", "Эрдман", "Элькин" } },
         { 'Ю', new List<string> { "Юдин", "Юрьев", "Юдин", "Юрьев", "Юдин" } },
         { 'Я', new List<string> { "Яковлев", "Яшин", "Якушев", "Яковлев", "Яшин" } }
     };
 
-    private static readonly List<string> FirstNames = new()
+    public static readonly List<string> FirstNames = new()
     {
         "Александр", "Алексей", "Андрей", "Антон", "Артем",
         "Борис", "Василий", "Виктор", "Владимир", "Дмитрий",
@@ -52,85 +48,12 @@ public static class ApplicantGeneratorHelper
         "Михаил", "Николай", "Олег", "Павел", "Сергей"
     };
 
-    private static readonly List<string> Patronymics = new()
+    public static readonly List<string> Patronymics = new()
     {
         "Александрович", "Алексеевич", "Андреевич", "Антонович", "Артемович",
         "Борисович", "Васильевич", "Викторович", "Владимирович", "Дмитриевич",
         "Евгеньевич", "Иванович", "Игоревич", "Константинович", "Максимович",
         "Михайлович", "Николаевич", "Олегович", "Павлович", "Сергеевич"
     };
-
-    /// <summary> Генерирует случайного абитуриента </summary>
-    public static Applicant GenerateApplicant()
-    {
-        // Получаем распределение букв из DistributionHelper
-        var distribution = DistributionHelper.CreateDefaultDistribution();
-        
-        // Выбираем букву на основе вероятностного распределения
-        char selectedLetter = SelectLetterByDistribution(distribution);
-        
-        // Выбираем случайную фамилию для выбранной буквы
-        var surnames = SurnamesByLetter.GetValueOrDefault(selectedLetter, new List<string> { "Иванов" });
-        string surname = surnames[Random.Shared.Next(surnames.Count)];
-        
-        // Выбираем случайное имя и отчество
-        string firstName = FirstNames[Random.Shared.Next(FirstNames.Count)];
-        string patronymic = Patronymics[Random.Shared.Next(Patronymics.Count)];
-        
-        // Генерируем 4 случайные цифры для телефона и email
-        string randomDigits = Random.Shared.Next(1000, 10000).ToString();
-        
-        // Генерируем случайные значения для enum и bool
-        var educationLevels = Enum.GetValues<EducationLevel>();
-        var studyForms = Enum.GetValues<StudyForm>();
-        
-        return new Applicant
-        {
-            Surname = surname,
-            FirstName = firstName,
-            Patronymic = patronymic,
-            EducationLevel = educationLevels[Random.Shared.Next(educationLevels.Length)],
-            StudyForm = studyForms[Random.Shared.Next(studyForms.Length)],
-            IsOriginalSubmitted = Random.Shared.Next(2) == 1,
-            IsBudgetFinancing = Random.Shared.Next(2) == 1,
-            PhoneNumber = $"895145{randomDigits}",
-            Email = $"student{randomDigits}@yandex.ru"
-        };
-    }
-
-    /// <summary> Выбирает букву на основе вероятностного распределения </summary>
-    private static char SelectLetterByDistribution(Dictionary<char, double> distribution)
-    {
-        // Фильтруем буквы с нулевой вероятностью для более реалистичного распределения
-        var nonZeroDistribution = distribution
-            .Where(kvp => kvp.Value > 0)
-            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-        
-        if (nonZeroDistribution.Count == 0)
-            return 'А'; // Fallback на первую букву алфавита
-        
-        // Создаем взвешенный список букв
-        var weightedLetters = new List<(char Letter, double Weight)>();
-        double cumulativeWeight = 0;
-        
-        foreach (var kvp in nonZeroDistribution)
-        {
-            cumulativeWeight += kvp.Value;
-            weightedLetters.Add((kvp.Key, cumulativeWeight));
-        }
-        
-        // Генерируем случайное число от 0 до cumulativeWeight
-        double randomValue = Random.Shared.NextDouble() * cumulativeWeight;
-        
-        // Находим букву, соответствующую случайному значению
-        foreach (var (letter, weight) in weightedLetters)
-        {
-            if (randomValue <= weight)
-                return letter;
-        }
-        
-        // Fallback на последнюю букву из списка
-        return weightedLetters.Last().Letter;
-    }
 }
 

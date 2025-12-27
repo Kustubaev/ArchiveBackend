@@ -6,7 +6,7 @@ using System.Linq.Expressions;
 
 namespace ArchiveWeb.Infrastructure.Repositories;
 
-public class LetterRepository : ILetterRepository
+public sealed class LetterRepository : ILetterRepository
 {
     private readonly ArchiveDbContext _context;
 
@@ -38,6 +38,11 @@ public class LetterRepository : ILetterRepository
             .FirstOrDefaultAsync(predicate, cancellationToken);
     }
 
+    public async Task<int> CountAsync(CancellationToken cancellationToken = default)
+    {
+        return await _context.Letters.CountAsync(cancellationToken);
+    }
+
     public async Task<Letter> AddAsync(Letter letter, CancellationToken cancellationToken = default)
     {
         await _context.Letters.AddAsync(letter, cancellationToken);
@@ -61,6 +66,12 @@ public class LetterRepository : ILetterRepository
 
     public async Task AddRangeAsync(List<Letter> letters, CancellationToken cancellationToken = default)
     {
-        _context.Letters.AddRangeAsync(letters, cancellationToken);
+        await _context.Letters.AddRangeAsync(letters, cancellationToken);
+    }
+
+    public Task DeleteAllAsync(CancellationToken cancellationToken = default)
+    {
+        _context.Letters.RemoveRange(_context.Letters);
+        return Task.CompletedTask;
     }
 }

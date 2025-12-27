@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Threading;
 
 namespace ArchiveWeb.Infrastructure.Repositories;
-public class ArchiveConfigurationRepository : IArchiveConfigurationRepository
+public sealed class ArchiveConfigurationRepository : IArchiveConfigurationRepository
 {
     private readonly ArchiveDbContext _context;
     public ArchiveConfigurationRepository(ArchiveDbContext context)
@@ -34,5 +34,17 @@ public class ArchiveConfigurationRepository : IArchiveConfigurationRepository
     public async Task AddAsync(ArchiveConfiguration config, CancellationToken cancellationToken = default)
     {
         await _context.ArchiveConfigurations.AddAsync(config, cancellationToken);
+    }
+
+    public Task UpdateAsync(ArchiveConfiguration config, CancellationToken cancellationToken = default)
+    {
+        _context.ArchiveConfigurations.Update(config);
+        return Task.CompletedTask;
+    }
+
+    public Task DeleteAllAsync(CancellationToken cancellationToken = default)
+    {
+        _context.ArchiveConfigurations.RemoveRange(_context.ArchiveConfigurations);
+        return Task.CompletedTask;
     }
 }

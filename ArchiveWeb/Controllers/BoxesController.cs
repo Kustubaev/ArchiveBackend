@@ -1,10 +1,7 @@
 using ArchiveWeb.Application.DTOs.Box;
 using ArchiveWeb.Application.DTOs.FileArchive;
-using ArchiveWeb.Application.Helpers;
-using ArchiveWeb.Domain.Entities;
-using ArchiveWeb.Infrastructure.Data;
+using ArchiveWeb.Domain.Interfaces.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace ArchiveWeb.Controllers;
 
@@ -14,14 +11,14 @@ namespace ArchiveWeb.Controllers;
 [Tags("Коробки")]
 public sealed class BoxesController : ControllerBase
 {
-    private readonly ArchiveDbContext _context;
+    private readonly IBoxService _boxService;
     private readonly ILogger<BoxesController> _logger;
 
     public BoxesController(
-        ArchiveDbContext context,
+        IBoxService boxService,
         ILogger<BoxesController> logger)
     {
-        _context = context;
+        _boxService = boxService;
         _logger = logger;
     }
 
@@ -31,20 +28,7 @@ public sealed class BoxesController : ControllerBase
     public async Task<ActionResult<List<BoxDto>>> GetBoxes(
         CancellationToken cancellationToken = default)
     {
-        var boxes = await _context.Boxes
-            .OrderBy(b => b.Number)
-            .Select(b => new BoxDto
-            {
-                Id = b.Id,
-                Number = b.Number,
-                ExpectedCount = b.ExpectedCount,
-                ActualCount = b.ActualCount,
-                AvailableSpace = b.AvailableSpace,
-                HasAvailableSpace = b.HasAvailableSpace,
-                CreatedAt = b.CreatedAt
-            })
-            .ToListAsync(cancellationToken);
-
+        var boxes = await _boxService.GetBoxesAsync(cancellationToken);
         return Ok(boxes);
     }
 
@@ -56,19 +40,7 @@ public sealed class BoxesController : ControllerBase
         int number,
         CancellationToken cancellationToken = default)
     {
-        var box = await _context.Boxes
-            .Where(b => b.Number == number)
-            .Select(b => new BoxDto
-            {
-                Id = b.Id,
-                Number = b.Number,
-                ExpectedCount = b.ExpectedCount,
-                ActualCount = b.ActualCount,
-                AvailableSpace = b.AvailableSpace,
-                HasAvailableSpace = b.HasAvailableSpace,
-                CreatedAt = b.CreatedAt
-            })
-            .FirstOrDefaultAsync(cancellationToken);
+        var box = await _boxService.GetBoxByNumberAsync(number, cancellationToken);
 
         if (box == null)
             return NotFound(new { message = $"Коробка с номером {number} не найдена" });
@@ -79,38 +51,20 @@ public sealed class BoxesController : ControllerBase
     /// <summary> Получить список дел в коробке </summary>
     [HttpGet("{number:int}/files")]
     [ProducesResponseType(typeof(List<FileArchiveDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<List<FileArchiveDto>>> GetBoxFiles(
         int number,
         CancellationToken cancellationToken = default)
     {
-        var box = await _context.Boxes
-            .FirstOrDefaultAsync(b => b.Number == number, cancellationToken);
-
-        if (box == null)
-            return NotFound(new { message = $"Коробка с номером {number} не найдена" });
-
-        var files = await _context.FileArchives
-            .Include(f => f.Box)
-            .Include(f => f.Letter)
-            .Where(f => f.BoxId == box.Id)
-            .OrderBy(f => f.PositionInBox)
-            .Select(f => new FileArchiveDto
-            {
-                Id = f.Id,
-                ApplicantId = f.ApplicantId,
-                FileNumberForArchive = f.FileNumberForArchive,
-                FullName = f.FullName,
-                FirstLetterSurname = f.FirstLetterSurname,
-                Letter = f.Letter.Value,
-                FileNumberForLetter = f.FileNumberForLetter,
-                BoxNumber = f.Box.Number,
-                PositionInBox = f.PositionInBox,
-                IsDeleted = f.IsDeleted,
-                CreatedAt = f.CreatedAt,
-            })
-            .ToListAsync(cancellationToken);
-
-        return Ok(files);
+        try
+        {
+            var files = await _boxService.GetBoxFilesAsync(number, cancellationToken);
+            return Ok(files);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
     }
 }
 

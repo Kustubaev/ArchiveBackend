@@ -5,18 +5,6 @@ namespace ArchiveWeb.Application.Helpers;
 /// <summary> Вспомогательный класс для создания идеального распределения букв </summary>
 public static class DistributionHelper
 {
-    /// <summary> Получение сбалансированного распределения на основе двух и двух распредделений</summary>
-    public static Dictionary<char, double> GetIdealDistribution(
-      ArchiveConfiguration config,
-      List<(char Letter, int Value)> fileDistribution)
-    {
-        Dictionary<char, double> oldDistribution = CreateDefaultDistribution(); // Создание базового (идеального) распределения
-        Dictionary<char, double> newDistribution = CalculateActualDistribution(fileDistribution); // Вычисление реального распределения
-        Dictionary<char, double> idealDistribution = CalculateIdealDistribution(config, oldDistribution, newDistribution); // Новое сбалансированная распределение
-
-        return idealDistribution;
-    }
-
     /// <summary> Создает примерное распределение букв на основе статистики русских фамилий </summary>
     public static Dictionary<char, double> CreateDefaultDistribution()
     {
@@ -30,6 +18,18 @@ public static class DistributionHelper
             { 'Ш', 1.1 }, { 'Щ', 0.7 }, { 'Ъ', 0.0 }, { 'Ы', 0.0 }, { 'Ь', 0.0 },
             { 'Э', 0.5 }, { 'Ю', 0.4 }, { 'Я', 2.5 }
         };
+    }
+
+    /// <summary> Получение сбалансированного распределения на основе двух и двух распредделений</summary>
+    public static Dictionary<char, double> GetIdealDistribution(
+      ArchiveConfiguration config,
+      List<(char Letter, int Value)> fileDistribution)
+    {
+        Dictionary<char, double> oldDistribution = CreateDefaultDistribution(); // Создание базового (идеального) распределения
+        Dictionary<char, double> newDistribution = CalculateActualDistribution(fileDistribution); // Вычисление реального распределения
+        Dictionary<char, double> idealDistribution = CalculateIdealDistribution(config, oldDistribution, newDistribution); // Новое сбалансированная распределение
+
+        return idealDistribution;
     }
 
     /// <summary> Вычисление распределения на основе данных </summary>

@@ -67,10 +67,12 @@ builder.Services.AddHealthChecks()
 
 // Application Services
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
-builder.Services.AddScoped<IArchiveInitializationService, ArchiveInitializationService>();
-builder.Services.AddScoped<IArchiveStatisticsService, ArchiveStatisticsService>();
+builder.Services.AddScoped<IApplicantService, ApplicantService>();
+builder.Services.AddScoped<IArchiveService, ArchiveService>();
 builder.Services.AddScoped<IFileArchiveService, FileArchiveService>();
-//builder.Services.AddScoped<IRedistributionService, RedistributionService>();
+builder.Services.AddScoped<ILetterService, LetterService>();
+builder.Services.AddScoped<IBoxService, BoxService>();
+builder.Services.AddScoped<IHistoryService, HistoryService>();
 
 // Exception Handling
 builder.Services.AddScoped<ArchiveWeb.Middleware.GlobalExceptionHandler>();
