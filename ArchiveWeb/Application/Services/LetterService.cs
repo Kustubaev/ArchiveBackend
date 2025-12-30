@@ -104,7 +104,9 @@ public sealed class LetterService : ILetterService
 
         var files = await _uow.FileArchives.GetFirstFilesByLetterIdAsync(normalizedLetter, cancellationToken);
 
-        return files.Select(f => new FileArchiveDto
+        var sortedFiles = files.OrderBy(f => int.Parse((f.FileNumberForArchive).Substring(3))).ToList();
+
+        return sortedFiles.Select(f => new FileArchiveDto
         {
             Id = f.Id,
             ApplicantId = f.ApplicantId,

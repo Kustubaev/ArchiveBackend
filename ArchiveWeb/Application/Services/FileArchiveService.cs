@@ -44,17 +44,25 @@ public sealed class FileArchiveService : IFileArchiveService
                     throw new InvalidSurnameException("У абитуриента не заполнено поле фамилии");
 
                 // Извлечение первой буквы фамилии (кириллица)
-                var firstLetter = char.ToUpper(applicant.Surname.TrimStart()[0]);
+                var firstLetter = char.ToUpper(applicant.Surname.Trim()[0]);
                 if (!IsCyrillicLetter(firstLetter))
                     throw new InvalidSurnameException($"Фамилия должна начинаться с кириллической буквы: {applicant.Surname}");
 
                 // Поиск буквы
                 var letter = await GetLetterByValueAsync(firstLetter, cancellationToken);
+                letter.UsedCount++;
+
+                // Генерируем номер дела в архиве
+                string fileNumberForArchive = FileNumberHelper.CalculateFileNumberForArchive(
+                    applicant.EducationLevel,
+                    applicant.IsOriginalSubmitted,
+                    firstLetter,
+                    letter.UsedCount);
 
                 // Проверка переполнения
                 if (letter.IsOverflow())
                     letter = await GetOverflowLetterAsync(cancellationToken);
-
+                                
                 // Получение последней конфигурации
                 var config = await _uow.ArchiveConfig.GetLastArchiveConfigurationAsync(cancellationToken);
                 if (config == null)
@@ -69,18 +77,12 @@ public sealed class FileArchiveService : IFileArchiveService
                     throw new BoxFullException(position.BoxNumber);
 
 
-                string fileNumberForArchive = FileNumberHelper.CalculateFileNumberForArchive(
-                    applicant.EducationLevel,
-                    applicant.IsOriginalSubmitted,
-                    letter.Value,
-                    letter.UsedCount + 1);
-
                 // Создание FileArchive
                 FileArchive fileArchive = new FileArchive
                 {
                     FileNumberForArchive = fileNumberForArchive,
                     FullName = applicant.GetFullName,
-                    FirstLetterSurname = char.ToUpper(applicant.Surname[0]),
+                    FirstLetterSurname = firstLetter,
                     FileNumberForLetter = letter.ActualCount + 1,
                     PositionInBox = position.PositionInBox,
                     IsDeleted = false,
@@ -91,10 +93,9 @@ public sealed class FileArchiveService : IFileArchiveService
                 await _uow.FileArchives.AddAsync(fileArchive, cancellationToken);
 
                 // Обновление счетчиков
-                letter.UsedCount++;
+                
                 letter.ActualCount++;
                 box.ActualCount++;
-                await _uow.Letters.UpdateAsync(letter, cancellationToken);
 
                 // Запись в историю
                 ArchiveHistory history = new ArchiveHistory

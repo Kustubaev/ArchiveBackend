@@ -37,22 +37,6 @@ public sealed class ApplicantsController : ControllerBase
         return Ok(response);
     }
 
-    /// <summary> Получить абитуриента по ID </summary>
-    [HttpGet("{id:guid}")]
-    [ProducesResponseType(typeof(ApplicantDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<ApplicantDto>> GetApplicant(
-        Guid id,
-        CancellationToken cancellationToken = default)
-    {
-        var applicant = await _applicantService.GetApplicantByIdAsync(id, cancellationToken);
-
-        if (applicant == null)
-            return NotFound(new { message = $"Абитуриент с ID {id} не найден" });
-
-        return Ok(applicant);
-    }
-
     /// <summary> Создать нового абитуриента </summary>
     [HttpPost]
     [ProducesResponseType(typeof(ApplicantDto), StatusCodes.Status201Created)]
@@ -75,6 +59,20 @@ public sealed class ApplicantsController : ControllerBase
         }
     }
 
+    /// <summary> Получить абитуриента по ID </summary>
+    [HttpGet("{id:guid}")]
+    [ProducesResponseType(typeof(ApplicantDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApplicantDto>> GetApplicant(Guid id, CancellationToken cancellationToken = default)
+    {
+        var applicant = await _applicantService.GetApplicantByIdAsync(id, cancellationToken);
+
+        if (applicant == null)
+            return NotFound(new { message = $"Абитуриент с ID {id} не найден" });
+
+        return Ok(applicant);
+    }
+        
     /// <summary> Обновить данные абитуриента </summary>
     [HttpPatch("{id:guid}")]
     [ProducesResponseType(typeof(ApplicantDto), StatusCodes.Status200OK)]

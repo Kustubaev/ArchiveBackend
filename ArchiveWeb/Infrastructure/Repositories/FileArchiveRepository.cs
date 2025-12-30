@@ -199,8 +199,6 @@ public sealed class FileArchiveRepository : IFileArchiveRepository
             .Include(f => f.Box)
             .Include(f => f.Letter)
             .Where(f => f.FirstLetterSurname == firstLetter)
-            .OrderBy(f => f.Box!.Number)
-            .ThenBy(f => f.PositionInBox)
             .ToListAsync(cancellationToken);
     }
 
